@@ -10,7 +10,7 @@
 import random
 import tempfile
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageFilter
 
 from core import BaseGenerator, TaskPair, ImageRenderer
 from core.video_utils import VideoGenerator
@@ -183,9 +183,12 @@ class TaskGenerator(BaseGenerator):
         to_square = move.to_square
         moving_piece = board.piece_at(from_square)
         
+        # Render first frame to extract the piece from
+        first_frame = self._render_board(fen)
+        
         # Hold initial position
         for _ in range(hold_frames):
-            frames.append(self._render_board(fen))
+            frames.append(first_frame)
         
         # Create transition frames
         board_size = self.config.image_size[0]
@@ -203,27 +206,41 @@ class TaskGenerator(BaseGenerator):
         end_x = to_file * square_size + square_size // 2
         end_y = (7 - to_rank) * square_size + square_size // 2
         
-        # PRE-RENDER the piece ONCE to keep it pixel-perfect consistent
-        piece_image = self._render_single_piece(moving_piece, square_size)
+        # Extract piece image from first frame to ensure visual consistency
+        # This ensures the moving piece looks exactly like the piece in the initial frame
+        # Also get the center offset to ensure precise positioning
+        piece_image, center_offset = self._extract_piece_from_frame(
+            first_frame, fen, from_square, square_size, board_size
+        )
+        
+        # Pre-render final board state for precise alignment
+        board.push(move)
+        final_board_fen = board.fen()
+        final_board_image = self._render_board(final_board_fen)
+        board.pop()  # Restore to initial state
         
         for i in range(transition_frames):
             progress = i / (transition_frames - 1) if transition_frames > 1 else 1.0
             
-            # Calculate piece position
-            current_x = start_x + (end_x - start_x) * progress
-            current_y = start_y + (end_y - start_y) * progress
-            
-            # Render frame with pre-rendered piece at intermediate position
-            frame = self._render_frame_with_moving_piece(
-                board, from_square, to_square, piece_image,
-                current_x, current_y, square_size
-            )
+            # For the last frame (progress = 1.0), use the final board state directly
+            # This ensures perfect alignment with the final position
+            if progress >= 1.0:
+                frame = final_board_image
+            else:
+                # Calculate piece position (center of target square)
+                current_x = start_x + (end_x - start_x) * progress
+                current_y = start_y + (end_y - start_y) * progress
+                
+                # Render frame with pre-rendered piece at intermediate position
+                frame = self._render_frame_with_moving_piece(
+                    board, from_square, to_square, piece_image,
+                    current_x, current_y, square_size, center_offset
+                )
             frames.append(frame)
         
-        # Hold final position
-        board.push(move)
+        # Hold final position (already rendered, just duplicate)
         for _ in range(hold_frames):
-            frames.append(self._render_board(board.fen()))
+            frames.append(final_board_image)
         
         return frames
     
@@ -235,9 +252,16 @@ class TaskGenerator(BaseGenerator):
         piece_image: Image.Image,
         piece_x: float,
         piece_y: float,
-        square_size: int
+        square_size: int,
+        center_offset: tuple[int, int] = (0, 0)
     ) -> Image.Image:
-        """Render a single frame with the pre-rendered moving piece at a specific position."""
+        """
+        Render a single frame with the pre-rendered moving piece at a specific position.
+        
+        Args:
+            center_offset: (x, y) position of the original square center within the extracted image
+                         (relative to top-left corner of extracted image)
+        """
         # Create a modified board without the moving piece
         board_copy = board.copy()
         board_copy.remove_piece_at(from_square)
@@ -247,9 +271,15 @@ class TaskGenerator(BaseGenerator):
         
         # Composite the pre-rendered piece onto the board
         result = base_image.convert('RGBA')
-        piece_width, piece_height = piece_image.size
-        paste_x = int(piece_x - piece_width // 2)
-        paste_y = int(piece_y - piece_height // 2)
+        
+        # Calculate paste position: center the piece at (piece_x, piece_y)
+        # center_offset tells us where the original square center is in the extracted image
+        center_x_in_image, center_y_in_image = center_offset
+        
+        # To place the piece center at (piece_x, piece_y), offset by the center position
+        paste_x = int(piece_x - center_x_in_image)
+        paste_y = int(piece_y - center_y_in_image)
+        
         result.paste(piece_image, (paste_x, paste_y), piece_image)
         
         return result.convert('RGB')
@@ -294,6 +324,106 @@ class TaskGenerator(BaseGenerator):
         draw.text((x, y), label, font=font, fill=fill_color)
         
         return img
+    
+    def _extract_piece_from_frame(
+        self,
+        frame: Image.Image,
+        fen: str,
+        square: int,
+        square_size: int,
+        board_size: int
+    ) -> Image.Image:
+        """
+        Extract a chess piece image from a rendered frame using background subtraction.
+        
+        This method renders a version of the board without the piece, then calculates
+        the difference to extract only the piece itself, removing the square background.
+        
+        Args:
+            frame: The rendered board image with the piece
+            fen: The FEN string of the board position
+            square: The square index (0-63) where the piece is located
+            square_size: Size of each square in pixels
+            board_size: Total board size in pixels
+            
+        Returns:
+            Extracted piece image with RGBA format, background set to transparent
+        """
+        # Calculate square boundaries with padding
+        from_file = chess.square_file(square)
+        from_rank = chess.square_rank(square)
+        
+        # Add padding to ensure we capture the entire piece including anti-aliasing
+        padding = max(2, square_size // 8)  # At least 2 pixels, or 1/8 of square size
+        
+        # Calculate pixel coordinates
+        left = from_file * square_size
+        top = (7 - from_rank) * square_size
+        right = left + square_size
+        bottom = top + square_size
+        
+        # Apply padding with bounds checking
+        left_padded = max(0, left - padding)
+        top_padded = max(0, top - padding)
+        right_padded = min(board_size, right + padding)
+        bottom_padded = min(board_size, bottom + padding)
+        
+        # Crop the square region from the frame with piece
+        square_with_piece = frame.crop((left_padded, top_padded, right_padded, bottom_padded))
+        square_with_piece = square_with_piece.convert('RGB')
+        
+        # Render the board without the piece at this square
+        board = chess.Board(fen)
+        board_copy = board.copy()
+        board_copy.set_piece_at(square, None)  # Remove the piece
+        empty_frame = self._render_board(board_copy.fen())
+        
+        # Crop the same square region from the empty board
+        square_without_piece = empty_frame.crop((left_padded, top_padded, right_padded, bottom_padded))
+        square_without_piece = square_without_piece.convert('RGB')
+        
+        # Calculate the difference between the two images
+        # This will highlight only the piece pixels
+        diff = ImageChops.difference(square_with_piece, square_without_piece)
+        
+        # Convert difference to grayscale for thresholding
+        diff_gray = diff.convert('L')
+        
+        # Create a mask: pixels with significant difference are part of the piece
+        # Use a threshold to handle anti-aliasing and slight rendering differences
+        threshold = 10  # Minimum difference to consider as piece pixel
+        
+        # Apply threshold using point operation: values > threshold become 255, else 0
+        def threshold_func(x):
+            return 255 if x > threshold else 0
+        
+        mask = diff_gray.point(threshold_func, mode='L')
+        
+        # Apply morphological operations to clean up the mask
+        # This helps remove noise and fill small gaps
+        # Slight dilation to capture anti-aliased edges
+        mask = mask.filter(ImageFilter.MaxFilter(size=3))
+        # Slight erosion to remove noise (size must be odd: 3, 5, 7, etc.)
+        mask = mask.filter(ImageFilter.MinFilter(size=3))
+        
+        # Convert the piece square to RGBA
+        piece_rgba = square_with_piece.convert('RGBA')
+        
+        # Apply the mask as alpha channel
+        # Pixels with no difference (background) become transparent
+        alpha = mask.split()[0] if mask.mode == 'L' else mask
+        piece_rgba.putalpha(alpha)
+        
+        # Calculate the position of the original square center within the extracted image
+        # Original square center in board coordinates: (left + square_size // 2, top + square_size // 2)
+        # In extracted image coordinates (relative to top-left of extracted image):
+        original_center_x_in_image = (left + square_size // 2) - left_padded
+        original_center_y_in_image = (top + square_size // 2) - top_padded
+        
+        # Return the piece image and the center position for precise positioning
+        center_offset = (original_center_x_in_image, original_center_y_in_image)
+        
+        return piece_rgba, center_offset
     
     # ══════════════════════════════════════════════════════════════════════════
     #  CHESS GENERATION HELPERS
