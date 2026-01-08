@@ -16,24 +16,15 @@ import random
 
 PROMPTS = {
     "default": [
-        "Animate the chess pieces to show white delivering checkmate in one move. The winning piece should move smoothly to its destination square, capturing if necessary, resulting in the opponent's king being in checkmate.",
-        "Show white making the winning move that checkmates black. The piece should move clearly from its starting position to deliver mate, with smooth animation.",
-        "Demonstrate white's checkmate in one. Move the attacking piece to its final square, showing the decisive blow that ends the game.",
+        "Show the fill-to-outline transformation being applied to the second shape. The filled shape should become an outline-only version.",
+        "Animate the fill-to-outline transformation where the filled shape changes to outline style according to the established pattern. The question mark should smoothly transition to show the correct outline style.",
+        "Complete the visual analogy by showing what the second shape becomes when the same fill-to-outline transformation is applied.",
     ],
     
-    "back_rank": [
-        "Show the rook or queen delivering a back-rank checkmate. The attacking piece should slide horizontally along the back rank to trap the enemy king.",
-        "Animate a classic back-rank mate. The attacking piece moves along the eighth rank to checkmate the trapped king behind its own pawns.",
-    ],
-    
-    "queen_mate": [
-        "Show the queen delivering checkmate. The queen should move decisively to its final square, supported by the king, to trap the opponent's king.",
-        "Animate the queen administering checkmate. She should glide to her destination, working with the friendly king to corner the enemy monarch.",
-    ],
-    
-    "rook_mate": [
-        "Show the rook delivering checkmate. The rook should move cleanly along its file or rank to trap the enemy king.",
-        "Animate the rook administering mate. It should slide smoothly to its destination square, cutting off the king's escape.",
+    "fill_to_outline": [
+        "Show the filled shape transforming to outline style. The border thickness should match the example.",
+        "Complete the analogy by revealing the outline version of the shape.",
+        "Animate the fill-to-outline transformation where the shape loses its fill and becomes outline-only.",
     ],
 }
 
